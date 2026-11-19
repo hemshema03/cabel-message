@@ -1,0 +1,2 @@
+export async function waha(path:string,body?:unknown){if(!process.env.WAHA_BASE_URL||!process.env.WAHA_API_KEY)throw new Error('Configure WAHA environment');const res=await fetch(process.env.WAHA_BASE_URL+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Api-Key':process.env.WAHA_API_KEY},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(15000),cache:'no-store'});if(!res.ok)throw new Error(`WAHA HTTP ${res.status}`);return res.json();}
+export const session=()=>process.env.WAHA_SESSION??'default';
