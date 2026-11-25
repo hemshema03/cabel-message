@@ -24,7 +24,7 @@ export default function UnpaidUpload({ready}:{ready:boolean}){
   catch(e){setError(e instanceof Error?e.message:'Unable to read Excel.');}finally{setBusy(false);lock.current=false;}
  }}/></label></div>
  {error&&<p className="feedback error" role="alert">{error}</p>}
- {done?<div className="feedback success" role="status"><h3>Messages queued</h3><p>{done} Delivery runs through the messaging worker.</p><Link href="/history" className="button secondary">View message history</Link><p>Upload a new Excel file above for your next send.</p></div>:fileName&&<>
+ {done?<div className="feedback success" role="status"><h3>Messages queued</h3><p>{done} Processing has started. Follow progress in message history.</p><Link href="/history" className="button secondary">View message history</Link><p>Upload a new Excel file above for your next send.</p></div>:fileName&&<>
  <p><b>{fileName}</b> · {rows.length} rows · {recipients.length} selected</p>
  {rows.some(row=>row.error)&&<p className="feedback warning">{rows.filter(row=>row.error).length} invalid or repeated rows cannot be selected. Correct them in Excel and upload again.</p>}
  {!rows.length&&<p>No customers found in this file.</p>}

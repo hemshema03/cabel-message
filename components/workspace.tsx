@@ -24,7 +24,7 @@ function Panel({ panel,campaignId }: { panel: string;campaignId?:string }) {
     const [manual, setManual] = useState(false);
     const [imported, setImported] = useState<Recipient[]>([]);
     const path = panel === 'unpaid' ? 'bills' : panel === 'history' ? 'campaigns' : panel;
-    const query = useQuery({ queryKey: [path, page], queryFn: () => api(`${path}?page=${page}`), enabled: !campaignId && panel !== 'unpaid' && panel !== 'settings' && !!titles[panel], retry: 1, refetchInterval: panel === 'history' ? 10000 : false });
+    const query = useQuery({ queryKey: [path, page], queryFn: () => api(`${path}?page=${page}`), enabled: !campaignId && panel !== 'unpaid' && panel !== 'settings' && !!titles[panel], retry: 1, refetchInterval: ['history','dashboard'].includes(panel) ? 5000 : false });
     const connection = useQuery({ queryKey: ['connection'], queryFn: () => api('waha/status'), retry: false, refetchInterval: 30000 }); const ready = connection.data?.status === 'WORKING';
     const rows: Row[] = Array.isArray(query.data) ? query.data : []; const overview = query.data as Summary | undefined; const filtered = rows.filter(r => { const c = r.customers ?? r; return `${c.name} ${c.customer_code} ${c.phone}`.toLowerCase().includes(search.toLowerCase()) && (!area || c.area === area); });
     async function action(work: () => Promise<void>) { setBusy(true); setError(''); setNotice(''); try { await work(); await cache.invalidateQueries(); } catch (e) { setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.'); } finally { setBusy(false); } }
