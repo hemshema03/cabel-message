@@ -5,10 +5,26 @@ import {PGlite} from '@electric-sql/pglite';
 import type {SupabaseClient} from '@supabase/supabase-js';
 import {processQueue} from '../lib/queue';
 import {WahaError,waha} from '../lib/waha';
-import {createHmac} from 'node:crypto';
-import {validWebhook} from '../lib/queue-security';
+import {equalSecret} from '../lib/queue-security';
 import {POST as processPost} from '../app/api/queue/process/route';
 import {POST as webhookPost} from '../app/api/waha/webhook/route';
+import {sendDelayMs} from '../lib/queue-config';
+import {queueCycle} from '../lib/queue-cycle';
+
+test('SEND_DELAY_MS validates configured pacing without extra environment variables',()=>{
+ assert.equal(sendDelayMs('5000'),5000);assert.equal(sendDelayMs('1750'),1750);assert.equal(sendDelayMs('0'),0);
+ for(const value of ['-1','NaN','1.5','60001'])assert.throws(()=>sendDelayMs(value));
+});
+
+test('browser continuation discovers existing queues, awaits batches and leaves idle queues alone',async()=>{
+ const calls:{path:string;method:string}[]=[];
+ let pending=false;
+ const request:typeof fetch=async(input,init)=>{calls.push({path:String(input),method:init?.method??'GET'});return Response.json(init?.method==='POST'?{processed:1}:{pending});};
+ assert.equal(await queueCycle(request),false);assert.equal(calls.length,1);
+ pending=true;assert.equal(await queueCycle(request),true);
+ assert.deepEqual(calls.map(c=>c.method),['GET','GET','POST']);
+ await assert.rejects(queueCycle(async()=>new Response(null,{status:401})));
+});
 
 test('processor bounds batches, saves IDs, holds uncertain sends, and releases lease',async()=>{
  for(const mode of ['success','timeout','rejected','missing-id','save-failure','busy','stopped']){
@@ -29,21 +45,23 @@ test('processor bounds batches, saves IDs, holds uncertain sends, and releases l
   assert.ok(sends<=5);if(mode==='stopped'||mode==='busy')assert.equal(sends,0);
   if(mode!=='busy')assert.equal(calls.at(-1)?.name,'release_queue');
   const finish=calls.find(c=>c.name==='finish_queue');
+  const begin=calls.find(c=>c.name==='begin_queue_send');
+  if(begin)assert.equal(begin.args.delay_ms,sendDelayMs());
   if(mode==='success')assert.equal(finish?.args.message_id,'mock-message-id');
   if(mode==='timeout'||mode==='missing-id')assert.equal(finish?.args.outcome,'UNKNOWN');
   if(mode==='rejected')assert.equal(finish?.args.outcome,'FAILED');
  }
 });
 
-test('API rejects invalid queue credentials and unauthenticated or tampered webhooks',async()=>{
- process.env.QUEUE_PROCESS_SECRET='test-only';process.env.WAHA_WEBHOOK_SECRET='test-hmac';
+test('API rejects invalid queue credentials and missing or invalid webhook credentials',async()=>{
+ process.env.WAHA_API_KEY='test-only';
  assert.equal((await processPost(new Request('http://localhost/api/queue/process',{method:'POST',headers:{authorization:'Bearer wrong'},body:'{}'}))).status,401);
  assert.equal((await processPost(new Request('http://localhost/api/queue/process',{method:'POST',headers:{authorization:'Bearer test-only'},body:'{"campaignId":"bad"}'}))).status,400);
  assert.equal((await webhookPost(new Request('http://localhost/api/waha/webhook',{method:'POST',body:'{}'}))).status,401);
  const raw=JSON.stringify({event:'message.ack',session:'wrong-session',payload:{id:'mock',ack:2}});
- const signature=createHmac('sha512','test-hmac').update(raw).digest('hex');
- assert.ok(validWebhook(raw,signature,'test-hmac'));assert.ok(!validWebhook(raw+' ',signature,'test-hmac'));
- assert.equal((await webhookPost(new Request('http://localhost/api/waha/webhook',{method:'POST',headers:{'x-webhook-hmac':signature},body:raw}))).status,200);
+ assert.ok(equalSecret('test-only','test-only'));assert.ok(!equalSecret('',''));
+ assert.equal((await webhookPost(new Request('http://localhost/api/waha/webhook',{method:'POST',headers:{'x-api-key':'wrong'},body:raw}))).status,401);
+ assert.equal((await webhookPost(new Request('http://localhost/api/waha/webhook',{method:'POST',headers:{'x-api-key':'test-only'},body:raw}))).status,200);
 });
 
 test('WAHA transport stores upstream error with key and recipient redacted (mock fetch)',async()=>{
@@ -54,11 +72,11 @@ test('WAHA transport stores upstream error with key and recipient redacted (mock
  finally{globalThis.fetch=original;process.env.WAHA_BASE_URL=oldUrl;process.env.WAHA_API_KEY=oldKey;}
 });
 
-test('authenticated API and signed acknowledgement use only mocked database HTTP',async()=>{
+test('authenticated API and authenticated acknowledgement use only mocked database HTTP',async()=>{
  const original=globalThis.fetch;
  const oldUrl=process.env.NEXT_PUBLIC_SUPABASE_URL,oldKey=process.env.SUPABASE_SERVICE_ROLE_KEY;
  process.env.NEXT_PUBLIC_SUPABASE_URL='https://mock.invalid';process.env.SUPABASE_SERVICE_ROLE_KEY='mock-service-key';
- process.env.QUEUE_PROCESS_SECRET='test-only';process.env.WAHA_WEBHOOK_SECRET='test-hmac';process.env.WAHA_SESSION='default';
+ process.env.WAHA_API_KEY='test-only';process.env.WAHA_SESSION='default';
  const requests:string[]=[];
  globalThis.fetch=async(input)=>{
   const url=String(input);requests.push(url);
@@ -70,8 +88,7 @@ test('authenticated API and signed acknowledgement use only mocked database HTTP
   const result=await processPost(new Request('http://localhost/api/queue/process',{method:'POST',headers:{authorization:'Bearer test-only'},body:'{}'}));
   assert.equal(result.status,200);assert.deepEqual(await result.json(),{busy:true,processed:0});
   const raw=JSON.stringify({event:'message.ack',session:'default',payload:{id:'mock-id',ack:2}});
-  const signature=createHmac('sha512','test-hmac').update(raw).digest('hex');
-  const ack=await webhookPost(new Request('http://localhost/api/waha/webhook',{method:'POST',headers:{'x-webhook-hmac':signature},body:raw}));
+   const ack=await webhookPost(new Request('http://localhost/api/waha/webhook',{method:'POST',headers:{'x-api-key':'test-only'},body:raw}));
   assert.equal(ack.status,200);assert.equal(requests.length,2);
  }finally{globalThis.fetch=original;process.env.NEXT_PUBLIC_SUPABASE_URL=oldUrl;process.env.SUPABASE_SERVICE_ROLE_KEY=oldKey;}
 });
@@ -82,9 +99,12 @@ test('real PostgreSQL migration: claims, interrupted recovery, stop, acknowledge
   await db.exec("create role anon;create role authenticated;create role service_role;create schema auth;create table auth.users(id uuid primary key);create function auth.uid() returns uuid language sql as $$select null::uuid$$;");
   await db.exec(readFileSync('supabase/migrations/0001_initial.sql','utf8').replace('create extension if not exists pgcrypto;',''));
   await db.exec(readFileSync('supabase/migrations/0002_serverless_queue.sql','utf8'));
+  await db.exec(readFileSync('supabase/migrations/0003_queue_continuation.sql','utf8'));
   const q=async(sql:string)=>(await db.query<Record<string,unknown>>(sql)).rows;
+  assert.equal((await q('select queue_pending() as pending'))[0].pending,false);
   await db.exec("insert into customers(id,customer_code,name,phone) values('00000000-0000-0000-0000-000000000001','mock','Mock','19999999999');insert into campaigns(id,title,type,template,status) values('00000000-0000-0000-0000-000000000002','Mock','CUSTOM','Mock','QUEUED');insert into message_deliveries(id,customer_id,campaign_id) values('00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002');");
   const owner="'00000000-0000-0000-0000-000000000004'",delivery="'00000000-0000-0000-0000-000000000003'";
+  assert.equal((await q('select queue_pending() as pending'))[0].pending,true);
   assert.equal((await q(`select acquire_queue(${owner}) as ok`))[0].ok,true);
   assert.equal((await q("select acquire_queue('00000000-0000-0000-0000-000000000005') as ok"))[0].ok,false);
   assert.equal((await q(`select * from claim_queue(${owner})`)).length,1);
@@ -92,12 +112,16 @@ test('real PostgreSQL migration: claims, interrupted recovery, stop, acknowledge
   await db.exec("update message_deliveries set claimed_at=now()-interval '2 minutes';select recover_queue();");
   assert.equal((await q('select status from message_deliveries'))[0].status,'QUEUED');
   await q(`select * from claim_queue(${owner})`);
-  assert.equal((await q(`select begin_queue_send(${owner},${delivery}) as ok`))[0].ok,true);
+  assert.equal((await q(`select begin_queue_send(${owner},${delivery},1750) as ok`))[0].ok,true);
+  const pacing=Number((await q('select extract(epoch from (next_send_at-now()))*1000 as delay from queue_lease'))[0].delay);
+  assert.ok(pacing>1000&&pacing<=1750);
+  assert.equal((await q(`select * from claim_queue(${owner})`)).length,0);
   await db.exec("update message_deliveries set claimed_at=now()-interval '2 minutes';select recover_queue();");
   assert.equal((await q('select status from message_deliveries'))[0].status,'UNKNOWN');
   assert.equal((await q(`select * from claim_queue(${owner})`)).length,0);
   await db.exec('select settle_queue();');
   assert.equal((await q('select status from campaigns'))[0].status,'NEEDS_REVIEW');
+  assert.equal((await q('select queue_pending() as pending'))[0].pending,false);
   // Fixture reset only: simulate a successful in-flight send with an early webhook.
   await db.exec(`update message_deliveries set status='PROCESSING',claim_token=${owner};select record_delivery_ack('default','mock-id',3);select finish_queue(${owner},${delivery},'SENT','mock-id');select record_delivery_ack('default','mock-id',1);select record_delivery_ack('default','mock-id',2);`);
   const row=(await q('select * from message_deliveries'))[0];assert.equal(row.status,'READ');assert.ok(row.sent_at);assert.ok(row.delivered_at);assert.ok(row.read_at);

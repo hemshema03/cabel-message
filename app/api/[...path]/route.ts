@@ -1,6 +1,7 @@
 import {after} from 'next/server';
 import {queueDatabase} from '@/lib/queue-db';
 import {processQueue,queueLog} from '@/lib/queue';
+import {canClaimBefore,QUEUE_BUDGET_MS} from '@/lib/queue-timing';
 // Cache Components requires the default Node.js runtime; explicit runtime exports are rejected.
 export const maxDuration=60;
 import { authorized, database } from '@/lib/db';
@@ -18,8 +19,8 @@ import {bulkPayment,paymentFilter} from '@/lib/payments';
 import {areaAudience,readAllPages} from '@/lib/area-messaging';
 
 async function handle(req:Request,{params}:{params:Promise<{path:string[]}>}){try{
-const deadline=Date.now()+45000;
-const kickQueue=(campaignId:string)=>after(async()=>{try{if(Date.now()<deadline-37000)await processQueue(queueDatabase(),{campaignId,deadline});}catch{queueLog('kickoff_failed',{campaign:campaignId,code:'PROCESS_FAILED'});}});
+const deadline=Date.now()+QUEUE_BUDGET_MS;
+const kickQueue=(campaignId:string)=>after(async()=>{try{if(canClaimBefore(deadline))await processQueue(queueDatabase(),{campaignId,deadline});}catch{queueLog('kickoff_failed',{campaign:campaignId,code:'PROCESS_FAILED'});}});
 const {path}=await params;const route=path.join('/');const url=new URL(req.url);
 if(route==='login'&&req.method==='POST'){const data=z.object({email:z.string().email(),password:z.string().min(1)}).parse(await req.json());const db=await database();const result=await db.auth.signInWithPassword(data);if(result.error)throw result.error;return Response.json({ok:true});}
 const db=await authorized();

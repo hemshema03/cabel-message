@@ -1,94 +1,76 @@
-# Production deployment and recovery
+# Vercel deployment and queue recovery
 
-## Root cause and implementation
+## Root cause
 
-Send previously inserted rows without starting a consumer. Only the separate infinite-loop `npm run worker` consumed them. Vercel does not launch that script. A successful manual WAHA send did not exercise this missing consumer. There was also no acknowledgement webhook handler.
+The original Send handler inserted queue rows, while only a separate infinite-loop script consumed them. Vercel did not launch that process. The first fix added bounded processing but still depended on a VPS timer for continuation and ignored `SEND_DELAY_MS`. That dependency is now removed.
 
-Send now schedules one bounded batch with Next.js `after()`, using the same processor as `POST /api/queue/process`. Supabase is the durable queue; an existing-VPS systemd timer supplies continuation. There are no self-calling HTTP chains, persistent Vercel workers, or detached send promises. TanStack Query refreshes history/details and dashboard counts; history includes **Resume queue**.
+## Environment
 
-The routes use Node.js. Next.js 16.4 with Cache Components forbids explicit `runtime` exports and requires default Node.js. Processing/Send have `maxDuration=60`, webhooks 15 seconds. Batches claim at most five rows, one at a time, within a 45-second budget with conservative headroom before starting another row. Usually fewer than five fit. Supabase requests time out after 5 seconds; WAHA after 12. Five-second pacing is enforced across invocations. The old `SEND_DELAY_MS` variable is no longer used.
-
-## Deployment order
-
-1. Stop any old standalone worker. Wait for its in-flight call to finish; do not reset `SENDING` or `UNKNOWN` rows.
-2. Back up as normal. Apply `supabase/migrations/0002_serverless_queue.sql` **once** in Supabase SQL Editor. Existing databases must **not** rerun 0001. The migration is additive, disables legacy claiming, and does not delete customers or recreate campaigns.
-3. Configure Vercel **Production** environment variables below, then redeploy using `npm run build`. Preview deployments must use a separate test database and mocked WAHA to avoid consuming production queues.
-4. Verify deployed functions have the 60-second limit. Ensure Deployment Protection allows the VPS processor and webhook through; application authentication still applies.
-5. Configure the webhook and install the VPS timer, leaving it disabled until actual sending is approved.
-6. When ready to send existing queued messages, enable the timer or use **Resume queue**. The global timer makes ALL active queued campaigns eligible. New Send clicks also start sending immediately.
-
-## Environment verification
-
-| Variable | Production value / scope |
-| --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL` | Existing production project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Matching anon/publishable key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Matching service role key; server only |
-| `WAHA_BASE_URL` | `http://178.236.185.109:3010`, no `/api` suffix |
-| `WAHA_API_KEY` | Existing WAHA key; server only |
-| `WAHA_SESSION` | `default` |
-| `WAHA_WEBHOOK_SECRET` | Random HMAC secret shared with WAHA |
-| `QUEUE_PROCESS_SECRET` | Separate random bearer secret shared with the VPS |
-| `APP_BASE_URL` | App's production HTTPS origin; VPS only |
-
-Generate secrets independently using `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. Store securely, never commit. No `NEXT_PUBLIC_` prefix on privileged keys. The supplied WAHA URL is HTTP; a TLS reverse proxy on the existing VPS can protect credentials in transit without installing another WAHA instance.
-
-Run `node --env-file=.env.local scripts/check-queue-env.mjs` for a secret-safe presence/shape check. For actual Vercel verification, use an authenticated CLI: `vercel env pull .env.production-check --environment=production`, run the checker with that ignored file, then remove it. This checks presence/shape, not credential authentication. Validate credentials with read-only WAHA session and Supabase checks. **Do not use the processing route as a health check: it sends messages.**
-
-The local check confirmed the requested WAHA URL and default session, and found that the new `QUEUE_PROCESS_SECRET` is not yet set. During implementation only local variable presence was verified; no linked Vercel project was available. Production values still require deployment-time verification. See `queue.env.example` for a template.
-
-## Existing VPS continuation
-
-Use systemd and Node.js 22.6+ (24 LTS recommended). The timer launches a short-lived HTTP client; no extra WAHA instance, hosted queue, or paid service is needed.
-
-Copy `scripts/queue-tick.ts` to `/opt/cable-queue/queue-tick.ts`. Copy `deploy/cable-queue.service` and `.timer` to `/etc/systemd/system/`. Create a dedicated system user `cable-queue`; make the script readable by it. Set root-owned `/etc/cable-queue.env` (mode 600) to:
+Set only these variables in Vercel Production, and in `.env.local` for local development:
 
 ```dotenv
-APP_BASE_URL=https://YOUR_PRODUCTION_DOMAIN
-QUEUE_PROCESS_SECRET=YOUR_VERCEL_QUEUE_SECRET
+WAHA_BASE_URL=http://178.236.185.109:3010
+WAHA_API_KEY=YOUR_EXISTING_WAHA_KEY
+WAHA_SESSION=default
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_ANON_KEY
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+SEND_DELAY_MS=5000
 ```
 
-Systemd reads the environment file before dropping privileges. Adjust the service's `/usr/bin/node` path if necessary.
+No other environment variables are required. Keep privileged keys server-only. `SEND_DELAY_MS` is a whole number from 0 to 60000 milliseconds (default 5000 if absent); it controls minimum spacing between sends across invocations, not an exact delivery schedule. Database claims enforce this spacing even with multiple tabs. Empty/invalid production configuration is checked by `node --env-file=.env.local scripts/check-queue-env.mjs`, which never prints secrets.
 
-```sh
-sudo systemctl daemon-reload
-# Only when approved to send queued messages:
-sudo systemctl enable --now cable-queue.timer
-sudo systemctl status cable-queue.timer
-sudo journalctl -u cable-queue.service -n 50
-```
+## Deploy
 
-Each tick follows the prior invocation by five seconds. Failed invocations recover on a later tick, including after reboot. A global 90-second database lease serializes Send/Resume/timer calls. The timer is required for unattended continuation after the browser closes and for large campaigns. Monitor timer failures, Vercel function usage and oldest queued rows. Existing Vercel usage limits still apply. `npm run worker` now performs a single endpoint invocation and exits; it is only a compatibility entry point.
+1. Stop any old standalone worker or previously installed `cable-queue.timer` before migration. The app no longer needs either. Do not reset interrupted deliveries.
+2. Apply unapplied migrations in order: `0002_serverless_queue.sql`, then `0003_queue_continuation.sql`. If 0002 was already applied, apply only 0003. Never rerun 0001 against an existing database. The migrations retain customer data, campaigns and delivery history.
+3. Set the seven variables in Vercel Production and redeploy with `npm run build`. Use separate test credentials/database for Preview so opening a preview cannot consume the production queue.
+4. Check Vercel's deployed Send and queue function limits are 60 seconds. This Next.js version with Cache Components uses Node.js by default and rejects explicit runtime exports; the code follows its installed documentation.
+5. When ready to send, log into the production app. Opening any authenticated panel automatically resumes active queued campaigns. Send immediately starts processing after committing queue rows. No additional service setup is needed.
 
-## WAHA acknowledgements
+Production environment values, migrations and deployment must still be applied in your account. Local source/build verification does not deploy or send customer messages.
 
-On the existing `default` session, preserve existing configuration and other webhooks. Add this entry to `config.webhooks` in WAHA Dashboard/session configuration, or merge it via your installed version's session-update API:
+## Processing and continuation
+
+Send uses one awaited Next.js `after()` callback bounded by its function deadline. Subsequent requests are driven by an invisible component in the authenticated layout: discover pending rows, await one POST batch, refresh TanStack Query data, then check again five seconds later. No server-side infinite loop, `setInterval`, detached send promise or recursive self-request is used. UI appearance and existing features are preserved.
+
+Each invocation claims at most five messages sequentially and reserves time for network calls and status writes. Supabase calls have five-second timeouts. WAHA reads use eight seconds; sends normally use thirty seconds (matching the supplied successful PowerShell command), capped to the remaining invocation budget. The queue deadline is 55 seconds from request entry within the unchanged 60-second function limit. Each send reserves fifteen seconds for finishing the row, settling campaigns and releasing the lease. A claim starts only with enough time for preparation, a minimum fifteen-second send window and final writes. Calls deferred for insufficient time leave queued rows for the next browser-driven batch. A global 90-second lease and atomic row claims prevent concurrent sends. `SEND_DELAY_MS` persists the next eligible send time in Supabase; long delays end the current batch rather than extending a function indefinitely.
+
+**Keep the app open for continuous processing.** Vercel cannot guarantee indefinite work after all tabs close without a scheduler. The current bounded callback may finish, remaining rows stay queued, and logging back in automatically resumes them. Background-tab throttling can slow continuation. This is safe resumability, not a promise of unattended processing with every client closed.
+
+The existing **Resume queue** button also processes a batch without recreating a campaign. Cancelled/deleted campaigns are not restarted. Authentication uses the existing Supabase operator session; no key is sent to browser code. An optional trusted machine request can authenticate with `Authorization: Bearer <WAHA_API_KEY>`, using that existing key. `GET /api/queue/process` only checks pending work; `POST` sends and must not be used as a health check.
+
+## Outcomes and duplicate prevention
+
+Successful WAHA responses save `SENT`, the message ID and `sent_at` immediately. NOWEB returns `key.id` in a Baileys message, as confirmed by the supplied PowerShell response. Complete keys are serialized using WAHA's own `fromMe_chatId_id[_participant]` convention, converting `@s.whatsapp.net` to `@c.us`, so `message.ack` IDs match. This uses returned key fields, never guesses from our request. Incomplete keys retain their raw `key.id`; existing string `id` and WEBJS `id._serialized` responses are also supported. Definite rejections save `FAILED` and the actual redacted error. Transport timeouts, 5xx and missing IDs are `UNKNOWN`, since WAHA may have already accepted the send. They are never blindly retried. Eligibility, payment and campaign stop state are rechecked before dispatch.
+
+Interrupted preparation with no send intent is safely requeued after the lease expires. Interrupted attempted sends are held as `UNKNOWN`. Legacy stale `SENDING` is also held for review. Campaigns with uncertainty end as `NEEDS_REVIEW`. Review WAHA history before any intentional resend; do not bulk reset unknown rows. Exactly-once delivery across independent systems is not guaranteed without WAHA idempotency support.
+
+Structured runtime logs contain batch/claim identifiers, counters and error codes, never recipient text or credentials. WAHA diagnostics add HTTP status, elapsed milliseconds, timeout budget, operation (sendText/sendImage/sessionStatus), and allowlisted response field names including `key` subfields. No response values, message IDs, URLs, headers or bodies are logged. Send errors are saved to `last_error`; preflight failures keep queued work and record diagnostics.
+
+## Optional delivery confirmation
+
+Sending and queue completion do not depend on webhooks. Without them, messages remain SENT after WAHA accepts them. For actual DELIVERED/READ confirmation, preserve the existing WAHA `default` session configuration and add a webhook:
 
 ```json
 {
   "url": "https://YOUR_PRODUCTION_DOMAIN/api/waha/webhook",
   "events": ["message.ack"],
-  "hmac": {"key": "YOUR_WAHA_WEBHOOK_SECRET"},
+  "customHeaders": [{"name": "X-Api-Key", "value": "YOUR_EXISTING_WAHA_API_KEY"}],
   "retries": {"policy": "constant", "delaySeconds": 2, "attempts": 15}
 }
 ```
 
-Do not create/replace the session or overwrite unrelated configuration. If the installed engine needs a session restart for configuration changes, schedule the interruption. No live WAHA configuration was changed during implementation because the production app domain was unavailable.
+Use HTTPS for this webhook. The handler authenticates the existing API key, filters session/event, and merges duplicate/out-of-order acknowledgements by exact message ID. It retains acknowledgements arriving before the send response is saved. No separate webhook secret is used. No live WAHA configuration changes are made by this repository.
 
-The route verifies SHA-512 `X-Webhook-Hmac` over the raw body and checks session/event. Supabase merges duplicate/out-of-order acknowledgements and retains events arriving before the send response is saved. Message IDs match exactly, never by guessed phone/text. `SENT` means WAHA accepted the request and returned an ID. `DELIVERED` and `READ` require device/read acknowledgements. Stored acknowledgement timestamps are server receipt times. Error acknowledgements mark failures. References: [WAHA events](https://waha.devlike.pro/docs/how-to/events/), [Vercel durations](https://vercel.com/docs/functions/configuring-functions/duration).
+## Verification
 
-## Safe resume and uncertain outcomes
+Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`. Tests cover bounded mocked sends, API authentication, status writes, uncertainties, browser continuation, configured pacing and SQL recovery in an isolated PostgreSQL database. No real customer sends are part of verification.
 
-**Resume queue** processes existing `QUEUED`/`RUNNING` campaigns without inserting recipients or creating another campaign. The timer continues remaining batches. Cancelled/deleted campaigns are not restarted; failed/unknown rows are never automatically retried.
+## NOWEB request comparison and verification
 
-An authenticated operator can POST `{"campaignId":"existing-uuid"}` to `/api/queue/process`; a VPS client uses `Authorization: Bearer <QUEUE_PROCESS_SECRET>`. Body `{}` processes the oldest eligible queue globally.
+The supplied successful PowerShell request uses POST `/api/sendText`, JSON `{session, chatId, text}`, and the `X-Api-Key` header with a 30-second timeout. The text-only application request matches those fields and endpoint. An explicitly selected or saved default image switches the application to POST `/api/sendImage` with `{session, chatId, file, caption}`; that is a different operation from the text-only PowerShell test. Both paths now parse NOWEB message keys.
 
-Rows move `QUEUED → PROCESSING → SENT / FAILED / UNKNOWN`, or `SKIPPED` when stopped/ineligible. Send intent is persisted before HTTP dispatch. Stale preparation with no dispatch intent returns to `QUEUED`; an interrupted attempted send becomes `UNKNOWN`. Timeouts, transport errors, 5xx, rate limits and missing response IDs are uncertain. Explicit 400/401/403/404/422 rejections fail. Legacy `SENDING` older than five minutes becomes `UNKNOWN`. Campaigns with unresolved uncertain outcomes end as `NEEDS_REVIEW`.
+No additional SQL migration is needed for the NOWEB parsing/timeout fix when the queue RPCs are already installed. Redeploy the application. Existing UNKNOWN rows remain held for manual reconciliation: the new parser cannot reconstruct a response that was previously discarded, and these rows must not be requeued automatically.
 
-Exactly-once delivery across Supabase and WAHA cannot be guaranteed without provider idempotency. Inspect WAHA/chat history before resolving UNKNOWN rows. If a successful send's response was lost, its webhook may be uncorrelatable without the saved ID. Leave it UNKNOWN until verified. Never bulk reset these rows or recreate a campaign as a retry. An administrator can attach a verified WAHA ID and call `apply_delivery_ack(delivery_uuid)` in SQL to project its saved acknowledgement; an intentional resend requires a separate explicit operator decision.
-
-## Diagnostics and testing
-
-Vercel logs use `scope=whatsapp_queue` and include batch/claim IDs, attempts, outcome and acknowledgement codes. No phone numbers, message text, bodies or credentials are logged. Send errors are stored in `last_error` with WAHA key/recipient redaction. Persistence failures leave claims for recovery instead of another send. Preflight failures keep rows queued and log the failure.
-
-Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`. Tests use mocked WAHA and isolated PGlite PostgreSQL: no production writes or real sends. A live smoke test with an approved test recipient is still a deployment step. Builds/tests do not migrate production, activate the VPS timer, or configure WAHA.
+References checked: [WAHA NOWEB send implementation](https://github.com/devlikeapro/waha/blob/core/src/core/engines/noweb/session.noweb.core.ts), [WAHA message ID serialization](https://github.com/devlikeapro/waha/blob/core/src/core/engines/noweb/utils.ts), [Vercel duration configuration](https://vercel.com/docs/functions/configuring-functions/duration). The actual response shape was confirmed from the user's supplied PowerShell output; tests use synthetic replacements only.

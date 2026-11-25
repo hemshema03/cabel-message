@@ -1,14 +1,14 @@
 import {z} from 'zod';
 import {queueDatabase} from '@/lib/queue-db';
-import {validWebhook} from '@/lib/queue-security';
+import {equalSecret} from '@/lib/queue-security';
 import {session} from '@/lib/waha';
 import {queueLog} from '@/lib/queue';
 // Cache Components requires the default Node.js runtime; explicit runtime exports are rejected.
 export const maxDuration=15;
 export async function POST(req:Request){
+ if(!equalSecret(req.headers.get('x-api-key')??'',process.env.WAHA_API_KEY??''))return new Response(null,{status:401});
  const raw=await req.text();
  if(raw.length>1000000)return new Response(null,{status:413});
- if(!validWebhook(raw,req.headers.get('x-webhook-hmac')??'',process.env.WAHA_WEBHOOK_SECRET??''))return new Response(null,{status:401});
  try{
   const envelope=z.object({event:z.string(),session:z.string(),payload:z.unknown()}).parse(JSON.parse(raw));
   if(envelope.event!=='message.ack'||envelope.session!==session())return Response.json({ignored:true});
