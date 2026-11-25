@@ -4,6 +4,7 @@ import Link from 'next/link';
 import MessageAttachment from './message-attachment';
 import {useMessageImage} from './use-message-image';
 import {unpaidRecipient,uploadedMessage,type UnpaidPreview} from '@/lib/unpaid-upload';
+import {defaultPaymentReminder} from '@/lib/message-templates';
 
 async function post(path:string,body:unknown){
  const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -14,7 +15,7 @@ export default function UnpaidUpload({ready}:{ready:boolean}){
  const [fileName,setFileName]=useState('');const [search,setSearch]=useState('');const [busy,setBusy]=useState(false);
  const [error,setError]=useState('');const [done,setDone]=useState('');const [campaign,setCampaign]=useState('');
  const {image,setImage,resetImage,defaultImage,usingDefault,loading:imageLoading,error:imageError,retry:retryImage,setReading}=useMessageImage();const lock=useRef(false);
- const [template,setTemplate]=useState('Hi {{name}}, your pending cable TV payment is ₹{{amount}}. Please pay as soon as possible. Thank you.');
+ const [template,setTemplate]=useState(defaultPaymentReminder);
  const recipients=rows.filter(row=>!row.error&&selected.includes(row.rowNumber));
  const visible=rows.filter(row=>`${row.data.name} ${row.data.phone} ${row.data.customer_code} ${row.data.area}`.toLowerCase().includes(search.toLowerCase()));
  return <section className="card"><div className="section-heading"><div><h2>Upload your latest unpaid list</h2><p>Upload Excel, deselect anyone you do not want to contact, then send. Upload a fresh file whenever you need to send again.</p></div><label className="button file-button">{busy?'Please wait…':'Upload Excel'}<input aria-label="Upload unpaid Excel" type="file" accept=".xlsx" disabled={busy} onChange={async event=>{

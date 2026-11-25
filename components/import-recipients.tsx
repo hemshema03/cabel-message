@@ -4,6 +4,7 @@ import Link from 'next/link';
 import MessageAttachment,{AttachmentPreview} from './message-attachment';
 import {useMessageImage} from './use-message-image';
 import {render} from '@/lib/domain';
+import {defaultPaymentReminder} from '@/lib/message-templates';
 export type Recipient={id:string;name:string;phone:string;area:string;is_active:boolean;opted_out:boolean;unpaid_amount?:number;payment_status?:string;bill_month?:string};
 export function eligible(r:Recipient,unpaid:boolean){return r.is_active&&!r.opted_out&&(!unpaid||(Number(r.unpaid_amount)>0&&r.payment_status!=='PAID'));}
 async function api(path:string,body:unknown){const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(data.error||'Please try again.');return data;}
@@ -11,7 +12,7 @@ export default function ImportRecipients({rows,unpaid,ready,targetArea}:{rows:Re
  const [selected,setSelected]=useState(()=>rows.filter(r=>eligible(r,unpaid)).map(r=>r.id));const [search,setSearch]=useState('');const [review,setReview]=useState(false);const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [done,setDone]=useState(false);const [campaign,setCampaign]=useState('');const lock=useRef(false);
  const [allowResend,setAllowResend]=useState(false);const [queueSummary,setQueueSummary]=useState('');
  const {image,setImage,resetImage,defaultImage,usingDefault,loading:imageLoading,error:imageError,retry:retryImage,setReading}=useMessageImage();
- const [template,setTemplate]=useState(unpaid?'Hi {{name}}, your pending cable TV payment for {{month}} is ₹{{amount}}. Please pay as soon as possible. Thank you.':'Dear {{name}}, cable TV service in {{area}} is temporarily unavailable. We are working to restore it. Thank you for your patience.');
+ const [template,setTemplate]=useState(unpaid?defaultPaymentReminder:'Dear {{name}}, cable TV service in {{area}} is temporarily unavailable. We are working to restore it. Thank you for your patience.');
  const recipients=rows.filter(r=>selected.includes(r.id)&&eligible(r,unpaid));const visible=rows.filter(r=>`${r.name} ${r.phone}`.toLowerCase().includes(search.toLowerCase()));
  const message=(r:Recipient)=>render(template,{name:r.name,area:r.area||'your area',amount:String(r.unpaid_amount??0),month:r.bill_month?new Date(r.bill_month+'-01T12:00:00').toLocaleDateString('en-IN',{month:'long',year:'numeric'}):''});
  if(done)return <section className="card feedback success" role="status"><h2>Messages queued</h2><p>{queueSummary} Processing has started. Follow progress in message history.</p><Link className="button" href="/history">View message history</Link></section>;
