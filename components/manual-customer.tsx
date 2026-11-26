@@ -11,8 +11,8 @@ export default function ManualCustomer({busy,onCancel,onSave}:{busy:boolean;onCa
   catch{setError('Enter a unique STB / User ID, customer name and valid phone number.');return;}
   await onSave(values);
  }}>
- <div className="mapping-grid">{[['customer_code','STB No / User ID'],['name','User Name'],['phone','Mobile Number'],['address','Address'],['area','Area'],['notes','Notes']].map(([name,label])=><label key={name}>{label}<input name={name} required={['customer_code','name','phone'].includes(name)} type={name==='phone'?'tel':'text'} disabled={busy}/></label>)}</div>
+ <div className="mapping-grid">{[['customer_code','STB No / User ID'],['cin','CIN'],['name','User Name'],['phone','Mobile Number'],['address','Address'],['area','Area'],['notes','Notes']].map(([name,label])=><label key={name}>{label}<input name={name} required={['customer_code','name','phone'].includes(name)} type={name==='phone'?'tel':'text'} disabled={busy}/></label>)}</div>
  {error&&<p className="feedback error" role="alert">{error}</p>}
- <div className="actions"><button className="button" disabled={busy} type="submit">{busy?'Adding…':'Add to All customers'}</button><button className="button secondary" disabled={busy} type="button" onClick={onCancel}>Cancel</button></div>
+ <div className="actions"><button className="button" disabled={busy} type="submit">{busy?'Adding…':'Add to Announcements'}</button><button className="button secondary" disabled={busy} type="button" onClick={onCancel}>Cancel</button></div>
  </form></section>;
 }

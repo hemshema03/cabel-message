@@ -11,7 +11,7 @@ export default function QueueContinuation(){
   let timer:ReturnType<typeof setTimeout>|undefined;
   async function tick(){
    try{
-    if(await queueCycle()&&!stopped)await cache.invalidateQueries({predicate:q=>['campaigns','campaign-details','dashboard'].includes(String(q.queryKey[0]))});
+    if(await queueCycle()&&!stopped)await cache.invalidateQueries({predicate:q=>['campaigns','campaign-details'].includes(String(q.queryKey[0]))});
    }catch{
     // Retry discovery on the next tick. Never retry a specific delivery here.
    }finally{if(!stopped)timer=setTimeout(tick,5000);}

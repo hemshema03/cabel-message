@@ -17,6 +17,8 @@ export async function queueUpload(db:SupabaseClient,id:string){
    const contacts=batch.map(({unpaid_amount,...contact})=>{void unpaid_amount;return contact;});
    const inserted=await db.from('customers').upsert(contacts,{onConflict:'customer_code',ignoreDuplicates:true});
    if(inserted.error)throw inserted.error;
+   const cinRows=contacts.filter(contact=>contact.cin).map(({customer_code,cin})=>({customer_code,cin}));
+   if(cinRows.length){const synced=await db.rpc('update_customer_cins',{rows:cinRows});if(synced.error)throw synced.error;}
    const lookup=await db.from('customers').select('id,customer_code,is_active,opted_out').in('customer_code',batch.map(row=>row.customer_code));
    if(lookup.error)throw lookup.error;
    const deliveries=batch.flatMap(row=>{

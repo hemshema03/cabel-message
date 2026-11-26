@@ -13,6 +13,25 @@ test('provided customer template maps User Name and STB instead of CIN',()=>{
  const review=reviewCustomers([templateRow(1)],templateMapping,[]);
  assert.equal(review.pending[0].error,'');assert.equal(review.pending[0].data.phone,'919876543210');
 });
+test('CIN maps separately from STB and preserves leading zeroes',()=>{
+ const mapping=suggestMapping(templateHeaders,['customer_code','cin','name','phone']);
+ assert.equal(mapping.cin,'CIN');assert.equal(mapping.customer_code,'STB No / User ID');
+ const review=reviewCustomers([{...templateRow(1),CIN:' 000123 '}],mapping,[]);
+ assert.equal(review.pending[0].data.cin,'000123');
+ assert.equal(review.pending[0].data.customer_code,'STB-1');
+ assert.equal(suggestMapping(['CIN'],['customer_code','cin']).customer_code,'');
+ assert.equal(customer.parse({customer_code:'A',name:'Example',phone:'9876543210'}).cin,'');
+});
+test('reupload stages only nonempty CIN updates for existing customers',()=>{
+ const mapping=suggestMapping(templateHeaders,['customer_code','cin','name','phone']);
+ const review=reviewCustomers([
+  {...templateRow(1),CIN:' 000123 ','Mobile Number':'invalid'},
+  {...templateRow(1),CIN:'OTHER'},
+  {...templateRow(2),CIN:' '},
+ ],mapping,['STB-1','STB-2']);
+ assert.equal(review.pending.length,0);
+ assert.deepEqual(review.cinUpdates,[{customer_code:'STB-1',cin:'000123'}]);
+});
 test('reuploading a full directory shows only the five extra customers',()=>{
  const rows=Array.from({length:1019},(_,i)=>templateRow(i));
  const existing=rows.slice(0,1014).map(row=>row['STB No / User ID']);

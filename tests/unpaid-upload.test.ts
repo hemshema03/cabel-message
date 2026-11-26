@@ -7,6 +7,14 @@ import {queueUpload} from '../lib/queue-upload';
 const headers=['Customer Name','STB No / User ID','Mobile Number','Balance Amount'];
 const raw=(code:string,amount='450')=>({'Customer Name':'Example','STB No / User ID':code,'Mobile Number':'9876543210','Balance Amount':amount});
 const person=(code:string)=>unpaidRecipient.parse({customer_code:code,name:'New name',phone:'9876543210',unpaid_amount:450});
+
+test('unpaid preview preserves CIN independently of STB and accepts older files',()=>{
+ const rows=previewUnpaid([...headers,'CIN'],[{...raw('A'),CIN:' 000456 '}]);
+ assert.equal(rows[0].error,'');assert.equal(rows[0].data.cin,'000456');
+ assert.equal(rows[0].data.customer_code,'A');
+ assert.equal(previewUnpaid(headers,[raw('A')])[0].data.cin,'');
+ assert.throws(()=>previewUnpaid(['Customer Name','CIN','Mobile Number','Balance Amount'],[{...raw('A'),CIN:'000456'}]));
+});
 test('unpaid template needs no month or stored payment status',()=>{
  const rows=previewUnpaid(headers,[raw('A'),raw('B','0'),raw('A'),raw('C',''),{...raw('D'),'Mobile Number':'invalid'}]);
  assert.equal(rows.length,5);assert.equal(rows[0].error,'');assert.equal(rows[1].error,'');
@@ -22,7 +30,11 @@ test('delivery snapshots use uploaded contact and amount without a monthly bill 
 type RecordRow=Record<string,unknown>;
 function fakeDatabase(){
  const tables:Record<string,RecordRow[]>={campaigns:[],customers:[],message_deliveries:[]};let failDelivery=false;
- const db={from(table:string){
+ const db={async rpc(name:string,{rows}:{rows:{customer_code:string;cin:string}[]}){
+  assert.equal(name,'update_customer_cins');let changed=0;
+  for(const row of rows){const found=tables.customers.find(c=>c.customer_code===row.customer_code);if(found&&row.cin&&found.cin!==row.cin){found.cin=row.cin;changed++;}}
+  return {data:changed,error:null};
+ },from(table:string){
   assert.ok(tables[table],`Unexpected table: ${table}`);
   let operation='select',payload:RecordRow[]=[];let single=false,count=false;let conflict='id';const filters:[string,unknown][]=[];let inFilter:[string,unknown[]]|undefined;
   const query={
@@ -62,4 +74,14 @@ test('opted-out customers are skipped and an empty campaign completes',async()=>
  const {db,tables}=fakeDatabase();tables.customers.push({id:'a',customer_code:'A',is_active:true,opted_out:true});
  tables.campaigns.push({id:'first',status:'DRAFT',template:'Hi',target_filter:{source:'UNPAID_UPLOAD',rows:[person('A')]}});
  assert.deepEqual(await queueUpload(db,'first'),{recipient_count:0,skipped_count:1});assert.equal(tables.campaigns[0].status,'COMPLETED');
+});
+
+test('uploaded CIN sync preserves existing contact details and opt-out',async()=>{
+ const {db,tables}=fakeDatabase();
+ tables.customers.push({id:'a',customer_code:'A',cin:'OLD',name:'Original',phone:'919999999999',is_active:true,opted_out:true});
+ tables.campaigns.push({id:'cin',status:'DRAFT',template:'Hi',target_filter:{source:'UNPAID_UPLOAD',rows:[{...person('A'),cin:'000123'},{...person('B'),cin:'000456'}]}});
+ await queueUpload(db,'cin');
+ assert.equal(tables.customers[0].cin,'000123');assert.equal(tables.customers[0].name,'Original');
+ assert.equal(tables.customers[0].phone,'919999999999');assert.equal(tables.customers[0].opted_out,true);
+ assert.equal(tables.customers[1].cin,'000456');assert.equal(tables.message_deliveries.length,1);
 });

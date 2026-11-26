@@ -6,7 +6,7 @@ export const unpaidRecipient=customer.extend({unpaid_amount:z.coerce.number().mi
 export type UnpaidRecipient=z.infer<typeof unpaidRecipient>;
 export type UnpaidPreview={rowNumber:number;data:Record<string,unknown>;error:string};
 export function previewUnpaid(headers:string[],rows:Record<string,string>[]):UnpaidPreview[]{
- const mapping=suggestMapping(headers,['customer_code','name','phone','area','address','unpaid_amount']);
+ const mapping=suggestMapping(headers,['customer_code','cin','name','phone','area','address','unpaid_amount']);
  if(['customer_code','name','phone','unpaid_amount'].some(field=>!mapping[field]))throw new Error('Use your unpaid Excel template with Customer Name, STB No / User ID, Mobile Number and Balance Amount.');
  const seen=new Set<string>();
  return rows.map((row,index)=>{
