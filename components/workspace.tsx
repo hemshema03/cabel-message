@@ -9,7 +9,6 @@ import CampaignDetails from "./campaign-details";
 import CampaignActions from "./campaign-actions";
 import DefaultImageSettings from "./default-image-settings";
 import UnpaidAccounts from "./unpaid-accounts";
-import UnpaidUpload from "./unpaid-upload";
 import AgentMessaging from "./agent-messaging";
 type Row = {
   id: string;
@@ -239,7 +238,6 @@ function Panel({ panel, campaignId }: { panel: string; campaignId?: string }) {
           )}
           {panel === "unpaid" && <>
             <UnpaidAccounts ready={ready} />
-            <UnpaidUpload ready={ready} />
           </>}
           {panel === "customers" && <AgentMessaging ready={ready} />}
           {campaignId && <CampaignDetails id={campaignId} />}

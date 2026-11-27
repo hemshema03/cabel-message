@@ -676,6 +676,36 @@ export default function CustomerAccounts({
       ? idOrder.compare(b.customer_code, a.customer_code)
       : idOrder.compare(a.customer_code, b.customer_code),
   );
+  async function exportCustomers() {
+    try {
+      const ExcelJS = await import("exceljs");
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet("Customers");
+      const visibleColumns = optionalColumns.filter(([key]) => shown.includes(key));
+      sheet.columns = visibleColumns.map(([key, label]) => ({ header: label, key, width: 22 }));
+      for (const row of filtered) {
+        const form = accountForm(row);
+        const values: Record<string, string | number> = {};
+        for (const [key] of visibleColumns) {
+          if (key === "channels") values[key] = form.channels.join(", ");
+          else if (key === "monthly_rent" || key === "monthly_total")
+            values[key] = monthlyRent(row.monthly_rent, row.channel_fee);
+          else if (key === "balance") values[key] = Number(form.balance);
+          else if (key !== "select" && key !== "actions") values[key] = form[key] || "?";
+        }
+        sheet.addRow(values);
+      }
+      const bytes = await workbook.xlsx.writeBuffer();
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "customers.xlsx";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Unable to export customers. Please try again.");
+    }
+  }
   const last = Math.max(0, Math.ceil(filtered.length / pageSize) - 1);
   const current = Math.min(page, last);
   const visible = filtered.slice(current * pageSize, (current + 1) * pageSize);
@@ -1032,6 +1062,7 @@ export default function CustomerAccounts({
       >
         <div className="flex flex-wrap items-center gap-2 justify-between">
           <div className="flex flex-wrap items-center gap-1">
+            <button type="button" className="sv-button bg-sv-blue text-white" onClick={exportCustomers} disabled={!filtered.length}>Export Excel</button>
             <button
               className="sv-button bg-sv-orange text-white"
               disabled={busy}
@@ -1458,7 +1489,7 @@ export default function CustomerAccounts({
         </div>
         {!visible.length && <p className="p-3">No matching customers.</p>}
         <p className="border border-sv-grid-border bg-white px-3 py-2.5">
-          Total customers: <strong>{accounts.length}</strong>
+          Total customers: <strong>{filtered.length}</strong>
         </p>
       </section>
       {compose && chosen.length > 0 && (

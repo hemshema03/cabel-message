@@ -1,6 +1,7 @@
 "use client";
 import toast from "react-hot-toast";
 import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import MessageAttachment from "./message-attachment";
 import { useMessageImage } from "./use-message-image";
@@ -21,7 +22,7 @@ async function post(path: string, body: unknown) {
   if (!response.ok) throw new Error(data.error || "Unable to send. Try again.");
   return data;
 }
-export default function UnpaidUpload({ ready }: { ready: boolean }) {
+export default function UnpaidUpload({ ready, uploadTarget }: { ready: boolean; uploadTarget: HTMLElement | null }) {
   const [rows, setRows] = useState<UnpaidPreview[]>([]);
   const [selected, setSelected] = useState<number[]>([]);
   const [fileName, setFileName] = useState("");
@@ -52,15 +53,9 @@ export default function UnpaidUpload({ ready }: { ready: boolean }) {
       .includes(search.toLowerCase()),
   );
   return (
-    <section className="sv-panel">
-      <div className="flex flex-wrap items-center gap-2 justify-between border-b border-sv-grid-border pb-2">
-        <div>
-          <h2 className="text-lg font-semibold">Upload your latest unpaid list</h2>
-          <p>
-            Upload Excel, deselect anyone you do not want to contact, then send.
-            Upload a fresh file whenever you need to send again.
-          </p>
-        </div>
+    <section className={rows.length || error || done ? "sv-panel" : ""}>
+      {uploadTarget && createPortal(<div>
+
         <label className="sv-button bg-sv-blue text-white relative overflow-hidden focus-within:outline-2 [&_input]:absolute [&_input]:inset-0 [&_input]:size-full [&_input]:cursor-pointer [&_input]:opacity-0">
           {busy ? "Please wait…" : "Upload Excel"}
           <input className="max-w-full"
@@ -111,7 +106,7 @@ export default function UnpaidUpload({ ready }: { ready: boolean }) {
             }}
           />
         </label>
-      </div>
+      </div>, uploadTarget)}
       {error && (
         <p className="border-l-4 border-sv-red bg-red-50 px-3 py-2 text-red-900" role="alert">
           {error}

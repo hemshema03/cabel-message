@@ -8,6 +8,7 @@ import { render } from "@/lib/domain";
 import { defaultPaymentReminder } from "@/lib/message-templates";
 export type Recipient = {
   id: string;
+  profile?: { agent?: string };
   customer_code?: string;
   cin?: string;
   name: string;

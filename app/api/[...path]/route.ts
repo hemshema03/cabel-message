@@ -52,7 +52,7 @@ if(route==='unpaid/accounts'&&req.method==='GET'){
  const accrued=await db.rpc('accrue_customer_bills');
  if(accrued.error)throw accrued.error;
  const accounts=await readAllPages(async offset=>{
-  const {data,error}=await db.from('customers').select('id,customer_code,name,cin,phone,area,is_active,opted_out,unpaid_amount:balance').gt('balance',0).order('customer_code').order('id').range(offset,offset+99);
+  const {data,error}=await db.from('customers').select('id,customer_code,name,cin,phone,area,is_active,opted_out,profile,unpaid_amount:balance').gt('balance',0).order('customer_code').order('id').range(offset,offset+99);
   if(error)throw error;
   return data??[];
  },100000);
