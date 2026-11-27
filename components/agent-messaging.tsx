@@ -11,42 +11,39 @@ async function get<T>(path: string): Promise<T> {
     );
   return data;
 }
-export default function AreaMessaging({ ready }: { ready: boolean }) {
-  const [area, setArea] = useState("");
+export default function AgentMessaging({ ready }: { ready: boolean }) {
+  const [agent, setAgent] = useState("");
   const [audience, setAudience] = useState<{
-    area: string;
+    agent: string;
     rows: Recipient[];
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const areas = useQuery({
-    queryKey: ["areas"],
-    queryFn: () => get<string[]>("areas"),
+  const agents = useQuery({
+    queryKey: ["collection-agents"],
+    queryFn: () => get<string[]>("collection-agents"),
     retry: 1,
   });
   return (
     <>
-      <section className="card area-messaging-card">
-        <></>
-        {/* <h2 className="mb-1">Share a service update with an area</h2> */}
-        <></>
-        <div className="actions area-selection">
-          <label className="area-field">
-            <span>Choose area</span>
+      <section className="sv-panel">
+        <div className="flex flex-wrap items-center gap-2 items-end">
+          <label className="sv-label w-full sm:max-w-md">
+            <span>Choose collection agent</span>
             
-            <select
-              disabled={busy || areas.isLoading}
-              value={area}
+            <select className="sv-field"
+              disabled={busy || agents.isLoading}
+              value={agent}
               onChange={(e) => {
-                setArea(e.target.value);
+                setAgent(e.target.value);
                 setAudience(null);
                 setError("");
               }}
             >
               <option value="">
-                {areas.isLoading ? "Loading areas…" : "Select an area"}
+                {agents.isLoading ? "Loading agents…" : "Select a collection agent"}
               </option>
-              {areas.data?.map((a) => (
+              {agents.data?.map((a) => (
                 <option key={a} value={a}>
                   {a}
                 </option>
@@ -54,18 +51,18 @@ export default function AreaMessaging({ ready }: { ready: boolean }) {
             </select>
           </label>
           <button
-            className="button"
-            disabled={!area || busy}
+            className="sv-button bg-sv-primary text-white"
+            disabled={!agent || busy}
             onClick={async () => {
               setBusy(true);
               setAudience(null);
               setError("");
               try {
-                const params = new URLSearchParams({ area, kind: "customers" });
+                const params = new URLSearchParams({ agent });
                 const rows = await get<Recipient[]>(
-                  "area-recipients?" + params,
+                  "agent-recipients?" + params,
                 );
-                setAudience({ area, rows });
+                setAudience({ agent, rows });
               } catch (e) {
                 setError(e instanceof Error ? e.message : "Please try again.");
               } finally {
@@ -76,38 +73,37 @@ export default function AreaMessaging({ ready }: { ready: boolean }) {
             {busy ? "Loading customers…" : "Choose recipients & write message"}
           </button>
         </div>
-        {areas.error && (
-          <p className="feedback error" role="alert">
-            Could not load areas.{" "}
-            <button className="text-button" onClick={() => areas.refetch()}>
+        {agents.error && (
+          <p className="border-l-4 border-sv-red bg-red-50 px-3 py-2 text-red-900" role="alert">
+            Could not load agents.{" "}
+            <button className="cursor-pointer text-sv-primary underline underline-offset-2" onClick={() => agents.refetch()}>
               Try again
             </button>
           </p>
         )}
-        {areas.data?.length === 0 && (
+        {agents.data?.length === 0 && (
           <p>
-            No areas found. Add an Area column when importing your customer
-            file.
+            No collection agents found. Add one in Masters to get started.
           </p>
         )}
         {error && (
-          <p className="feedback error" role="alert">
+          <p className="border-l-4 border-sv-red bg-red-50 px-3 py-2 text-red-900" role="alert">
             {error}
           </p>
         )}
         {audience && !audience.rows.length && (
-          <p className="feedback warning">
-            No eligible customers in {audience.area}. No messages will be sent.
+          <p className="border-l-4 border-sv-yellow bg-amber-50 px-3 py-2 text-amber-950">
+            No eligible customers are assigned to {audience.agent}.
           </p>
         )}
       </section>
       {audience && audience.rows.length > 0 && (
         <ImportRecipients
-          key={audience.area}
+          key={audience.agent}
           rows={audience.rows}
           unpaid={false}
           ready={ready}
-          targetArea={audience.area}
+          targetAgent={audience.agent}
         />
       )}
     </>

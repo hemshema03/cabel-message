@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import type {SupabaseClient} from '@supabase/supabase-js';
 import {previewUnpaid,unpaidRecipient,uploadDelivery} from '../lib/unpaid-upload';
-import {queueUpload} from '../lib/queue-upload';
+import {queueBalanceReminders,queueUpload} from '../lib/queue-upload';
 
 const headers=['Customer Name','STB No / User ID','Mobile Number','Balance Amount'];
 const raw=(code:string,amount='450')=>({'Customer Name':'Example','STB No / User ID':code,'Mobile Number':'9876543210','Balance Amount':amount});
@@ -30,7 +30,8 @@ test('delivery snapshots use uploaded contact and amount without a monthly bill 
 type RecordRow=Record<string,unknown>;
 function fakeDatabase(){
  const tables:Record<string,RecordRow[]>={campaigns:[],customers:[],message_deliveries:[]};let failDelivery=false;
- const db={async rpc(name:string,{rows}:{rows:{customer_code:string;cin:string}[]}){
+ const db={async rpc(name:string,{rows}:{rows:{customer_code:string;cin:string}[]}={rows:[]}){
+  if(name==='accrue_customer_bills')return {data:null,error:null};
   assert.equal(name,'update_customer_cins');let changed=0;
   for(const row of rows){const found=tables.customers.find(c=>c.customer_code===row.customer_code);if(found&&row.cin&&found.cin!==row.cin){found.cin=row.cin;changed++;}}
   return {data:changed,error:null};
@@ -57,6 +58,23 @@ function fakeDatabase(){
  }};
  return {db:db as unknown as SupabaseClient,tables,interrupt(){failDelivery=true;}};
 }
+test('balance reminders use current balances and queue only selected eligible debtors, once',async()=>{
+ const {db,tables}=fakeDatabase();
+ const contact={name:'Test',phone:'919876543210',balance:150,is_active:true,opted_out:false};
+ tables.customers.push(...[
+  {id:'a'},{id:'b',balance:0},{id:'c',opted_out:true},{id:'d',phone:''},
+  {id:'e',is_active:false},{id:'f'},{id:'g',balance:270}
+ ].map(overrides=>({...contact,...overrides})));
+ tables.campaigns.push({id:'reminders',status:'DRAFT',template:'Balance {{amount}}',
+  target_filter:{source:'ACCOUNT_BALANCE',ids:['a','b','c','d','e','g']}});
+ for(let attempt=0;attempt<2;attempt++){
+  const result=await queueBalanceReminders(db,'reminders');
+  assert.equal(result.recipient_count,2);
+  assert.equal(result.skipped_count,4);
+ }
+ assert.deepEqual(tables.message_deliveries.map(row=>[row.customer_id,row.rendered_message]),
+  [['a','Balance 150'],['g','Balance 270']]);
+});
 test('only selected upload rows queue; retry is idempotent and a fresh upload sends again',async()=>{
  const {db,tables,interrupt}=fakeDatabase();
  tables.customers.push({id:'a',customer_code:'A',name:'Old name',phone:'919999999999',is_active:true,opted_out:false},{id:'b',customer_code:'B',is_active:true,opted_out:false});

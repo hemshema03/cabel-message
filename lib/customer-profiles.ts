@@ -10,10 +10,11 @@ export const columns = [
 ] as const;
 type Field=typeof columns[number][0];
 export type Master={kind:'plan'|'channel'|'agent';name:string;amount:number};
-export type Form=Record<Field|'cin',string> & {channels:string[]};
+export type Street={id:string;name:string;area:string;city:string};
+export type Form=Record<Field|'cin',string> & {channels:string[];street_id?:string};
 export type Account={id:string;customer_code:string;name:string;phone:string;area:string;cin:string;
   is_active:boolean;opted_out:boolean;monthly_rent:number;channel_fee:number;balance:number;
-  profile:Partial<Record<Field,string>> & {channels?:string[]}};
+  profile:Partial<Record<Field,string>> & {channels?:string[];street_id?:string}};
 export function blankForm():Form {
   return {status:'Active',customer_code:'',name:'',door:'',street:'',area:'',city:'',mobile:'',
     box:'',vc:'',mso:'',monthly_rent:'',balance:'',agent:'',plan:'',channels:[],cin:''};
@@ -28,7 +29,7 @@ const text=z.string().trim().max(1000);
 export const formSchema=z.object({
   status:text.min(1),customer_code:text.min(1),name:text.min(1),door:text,street:text,area:text,city:text,mobile:text,
   box:text,vc:text,mso:text,monthly_rent:amount.nonnegative(),balance:amount,agent:text,plan:text,cin:text,
-  channels:z.array(text.min(1)).max(200)
+  channels:z.array(text.min(1)).max(200),street_id:z.string().uuid().optional()
 });
 export function entry(input:unknown){
   const {customer_code,name,area,cin,monthly_rent,balance,...profile}=formSchema.parse(input);

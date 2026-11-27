@@ -1,3 +1,4 @@
+import {render} from './domain';
 import {stoppedCampaign} from './message-history';
 import type {SupabaseClient} from '@supabase/supabase-js';
 import {unpaidRecipient,uploadDelivery} from './unpaid-upload';
@@ -28,13 +29,52 @@ export async function queueUpload(db:SupabaseClient,id:string){
    });
    if(deliveries.length){const saved=await db.from('message_deliveries').upsert(deliveries,{onConflict:'campaign_id,customer_id',ignoreDuplicates:true});if(saved.error)throw saved.error;}
   }
+  await publishReminder(db,id);
+ }
+ return reminderCounts(db,id,rows.length);
+}
+
+async function publishReminder(db:SupabaseClient,id:string){
   const published=await db.from('campaigns').update({status:'QUEUED'}).eq('id',id).eq('status','DRAFT');
   if(published.error)throw published.error;
   const latest=await db.from('campaigns').select('status').eq('id',id).single();if(latest.error)throw latest.error;
   if(stoppedCampaign(latest.data.status)){const skipped=await db.from('message_deliveries').update({status:'SKIPPED',last_error:'Stopped by operator'}).eq('campaign_id',id).eq('status','QUEUED');if(skipped.error)throw skipped.error;throw new Error('This campaign was stopped. No further queued messages will be sent.');}
- }
+}
+
+async function reminderCounts(db:SupabaseClient,id:string,selected:number){
  const count=await db.from('message_deliveries').select('id',{head:true,count:'exact'}).eq('campaign_id',id);
  if(count.error)throw count.error;
  if(!count.count){const finished=await db.from('campaigns').update({status:'COMPLETED'}).eq('id',id).eq('status','QUEUED');if(finished.error)throw finished.error;}
- return {recipient_count:count.count??0,skipped_count:rows.length-(count.count??0)};
+ return {recipient_count:count.count??0,skipped_count:selected-(count.count??0)};
+}
+
+export async function queueBalanceReminders(db:SupabaseClient,id:string){
+ const {data:campaign,error}=await db.from('campaigns').select('template,status,target_filter').eq('id',id).single();
+ if(error)throw error;
+ if(campaign.target_filter?.source!=='ACCOUNT_BALANCE'||stoppedCampaign(campaign.status))
+  throw new Error('This reminder campaign is unavailable.');
+ const ids:string[]=campaign.target_filter.ids;
+ if(campaign.status==='DRAFT'){
+  const accrued=await db.rpc('accrue_customer_bills');
+  if(accrued.error)throw accrued.error;
+  const deliveries=[];
+  for(let offset=0;offset<ids.length;offset+=100){
+   const {data,error}=await db.from('customers').select('id,name,area,balance,phone,is_active,opted_out').in('id',ids.slice(offset,offset+100));
+   if(error)throw error;
+   for(const row of data??[]){
+    if(Number(row.balance)<=0||!row.is_active||row.opted_out||!/^[1-9]\d{10,14}$/.test(row.phone))continue;
+    deliveries.push({campaign_id:id,customer_id:row.id,recipient_phone:row.phone,
+     rendered_message:render(campaign.template,{name:row.name,area:row.area||'your area',amount:String(row.balance)}),status:'QUEUED'});
+   }
+  }
+  if(deliveries.length){
+   const saved=await db.from('message_deliveries').upsert(deliveries,{onConflict:'campaign_id,customer_id',ignoreDuplicates:true});
+   if(saved.error)throw saved.error;
+  }
+  await publishReminder(db,id);
+ }
+ const counts=await reminderCounts(db,id,ids.length);
+ return {...counts,message:counts.recipient_count
+  ?counts.recipient_count+' reminder(s) queued. '+counts.skipped_count+' skipped.'
+  :'No reminders queued. The selected customers are now paid or ineligible.'};
 }

@@ -14,7 +14,7 @@ import ExcelJS from 'exceljs';
 import {queueResult} from '@/lib/queue-result';
 import {previewUnpaid,unpaidRecipient} from '@/lib/unpaid-upload';
 import {stopCampaign} from '@/lib/stop-campaign';
-import {queueUpload} from '@/lib/queue-upload';
+import {queueUpload,queueBalanceReminders} from '@/lib/queue-upload';
 import {bulkPayment,paymentFilter} from '@/lib/payments';
 import {areaAudience,readAllPages} from '@/lib/area-messaging';
 
@@ -30,6 +30,34 @@ if(route==='settings/default-image'&&req.method==='GET')return Response.json({im
 if(route==='settings/default-image'&&req.method==='POST'){const input=z.object({image:messageImage.nullable()}).parse(body);const image=input.image?validateImage(input.image):null;await saveDefaultImage(image);return Response.json({image},{headers:{'Cache-Control':'no-store'}});}
 if(route==='logout'){await db.auth.signOut();return Response.json({ok:true});}
 if(route==='waha/status')return Response.json(await waha('/api/sessions/'+encodeURIComponent(session())));
+if(route==='collection-agents'&&req.method==='GET'){
+ const rows=await readAllPages(async offset=>{
+  const {data,error}=await db.from('customer_master').select('name').eq('kind','agent').order('name').range(offset,offset+99);
+  if(error)throw error;
+  return data??[];
+ },100000);
+ return Response.json(rows.map(row=>row.name));
+}
+if(route==='agent-recipients'&&req.method==='GET'){
+ const agent=z.string().trim().min(1).max(1000).parse(url.searchParams.get('agent'));
+ const rows=await readAllPages(async offset=>{
+  const {data,error}=await db.from('customers').select('id,name,cin,phone,area,is_active,opted_out')
+   .eq('profile->>agent',agent).eq('is_active',true).eq('opted_out',false).order('id').range(offset,offset+99);
+  if(error)throw error;
+  return data??[];
+ });
+ return Response.json(rows.filter(row=>/^[1-9]\d{10,14}$/.test(row.phone)));
+}
+if(route==='unpaid/accounts'&&req.method==='GET'){
+ const accrued=await db.rpc('accrue_customer_bills');
+ if(accrued.error)throw accrued.error;
+ const accounts=await readAllPages(async offset=>{
+  const {data,error}=await db.from('customers').select('id,customer_code,name,cin,phone,area,is_active,opted_out,unpaid_amount:balance').gt('balance',0).order('customer_code').order('id').range(offset,offset+99);
+  if(error)throw error;
+  return data??[];
+ },100000);
+ return Response.json(accounts,{headers:{'Cache-Control':'no-store'}});
+}
 if(route==='areas'&&req.method==='GET'){
 const rows=await readAllPages(async offset=>{const r=await db.from('customers').select('area').order('id').range(offset,offset+99);if(r.error)throw r.error;return r.data??[];},100000);
 return Response.json([...new Set(rows.map(r=>r.area as string).filter(a=>a&&a.trim()))].sort((a,b)=>a.localeCompare(b)));
@@ -55,8 +83,8 @@ if(route==='customers'&&req.method==='POST'){const saved=await db.from('customer
 if(path[0]==='customers'&&path[1]&&req.method==='PATCH')return result(db.from('customers').update(customer.partial().parse(body)).eq('id',z.string().uuid().parse(path[1])).select());
 if(route==='bills/mark-paid'&&req.method==='POST'){const input=bulkPayment.parse(body);return result(db.from('monthly_bills').update({payment_status:'PAID',unpaid_amount:0}).in('id',input.ids).eq('bill_month',input.bill_month).neq('payment_status','PAID').select('id,customer_id'));}
 if(path[0]==='bills'&&path[1]&&req.method==='PATCH')return result(db.from('monthly_bills').update(bill.partial().parse(body)).eq('id',z.string().uuid().parse(path[1])).select());
-if(route==='campaigns'&&req.method==='POST'){const data=z.object({title:z.string().min(1),type:z.enum(['PAYMENT_REMINDER','BREAKDOWN','MAINTENANCE','RESTORED','CUSTOM']),template:z.string().min(1).max(4000),bill_month:month.optional(),target_filter:z.object({image:messageImage.optional(),area:z.string().optional(),ids:z.array(z.string().uuid()).min(1).max(10000)})}).parse(body);if(data.target_filter.image)validateImage(data.target_filter.image);return result(db.from('campaigns').insert(data).select().single());}
-if(path[0]==='campaigns'&&path[2]==='send'&&req.method==='POST'){const input=z.object({confirmed:z.literal(true),allow_resend:z.boolean().default(false)}).parse(body);const status=await waha('/api/sessions/'+encodeURIComponent(session()));if(status.status!=='WORKING')throw new Error('WAHA session is not WORKING');const uploaded=await db.from('campaigns').select('target_filter').eq('id',path[1]).single();if(uploaded.error)throw uploaded.error;if(uploaded.data.target_filter?.source==='UNPAID_UPLOAD'){const queued=await queueUpload(db,path[1]);kickQueue(path[1]);return Response.json(queued);}const queued=await db.rpc('queue_campaign',{campaign:path[1],allow_resend:input.allow_resend});if(queued.error)throw queued.error;const [campaign,deliveries]=await Promise.all([db.from('campaigns').select('target_filter').eq('id',path[1]).single(),db.from('message_deliveries').select('id',{count:'exact',head:true}).eq('campaign_id',path[1])]);if(campaign.error)throw campaign.error;if(deliveries.error)throw deliveries.error;const count=deliveries.count??0;if(count===0){const cancelled=await db.from('campaigns').update({status:'CANCELLED'}).eq('id',path[1]).eq('status','QUEUED');if(cancelled.error)throw cancelled.error;}kickQueue(path[1]);return Response.json(queueResult(campaign.data.target_filter?.ids?.length??0,count));}
+if(route==='campaigns'&&req.method==='POST'){const data=z.object({title:z.string().min(1),type:z.enum(['PAYMENT_REMINDER','BREAKDOWN','MAINTENANCE','RESTORED','CUSTOM']),template:z.string().min(1).max(4000),bill_month:month.optional(),target_filter:z.object({source:z.literal('ACCOUNT_BALANCE').optional(),image:messageImage.optional(),area:z.string().optional(),agent:z.string().trim().min(1).max(1000).optional(),ids:z.array(z.string().uuid()).min(1).max(10000)})}).parse(body);if(data.target_filter.image)validateImage(data.target_filter.image);return result(db.from('campaigns').insert(data).select().single());}
+if(path[0]==='campaigns'&&path[2]==='send'&&req.method==='POST'){const input=z.object({confirmed:z.literal(true),allow_resend:z.boolean().default(false)}).parse(body);const status=await waha('/api/sessions/'+encodeURIComponent(session()));if(status.status!=='WORKING')throw new Error('WAHA session is not WORKING');const uploaded=await db.from('campaigns').select('target_filter').eq('id',path[1]).single();if(uploaded.error)throw uploaded.error;if(uploaded.data.target_filter?.source==='ACCOUNT_BALANCE'){const queued=await queueBalanceReminders(db,path[1]);if(queued.recipient_count)kickQueue(path[1]);return Response.json(queued);}if(uploaded.data.target_filter?.source==='UNPAID_UPLOAD'){const queued=await queueUpload(db,path[1]);kickQueue(path[1]);return Response.json(queued);}const queued=await db.rpc('queue_campaign',{campaign:path[1],allow_resend:input.allow_resend});if(queued.error)throw queued.error;const [campaign,deliveries]=await Promise.all([db.from('campaigns').select('target_filter').eq('id',path[1]).single(),db.from('message_deliveries').select('id',{count:'exact',head:true}).eq('campaign_id',path[1])]);if(campaign.error)throw campaign.error;if(deliveries.error)throw deliveries.error;const count=deliveries.count??0;if(count===0){const cancelled=await db.from('campaigns').update({status:'CANCELLED'}).eq('id',path[1]).eq('status','QUEUED');if(cancelled.error)throw cancelled.error;}kickQueue(path[1]);return Response.json(queueResult(campaign.data.target_filter?.ids?.length??0,count));}
 if(path[0]==='campaigns'&&['cancel','delete'].includes(path[2])&&req.method==='POST'){
  z.object({confirmed:z.literal(true)}).parse(body);const id=z.string().uuid().parse(path[1]);
  await stopCampaign(db,id,path[2]==='delete');

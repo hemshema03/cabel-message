@@ -23,7 +23,18 @@ export async function GET(){
       if(r.error)throw r.error;
       return r.data??[];
     });
-    return Response.json({accounts,masters},{headers:{'Cache-Control':'no-store'}});
+    let streetsAvailable=true;
+    const streets=await readAllPages(async offset=>{
+      const result=await db.from('street_master').select('id,name,area,city')
+        .order('name').order('area').order('city').order('id').range(offset,offset+99);
+      if(result.error?.code==='PGRST205' || result.error?.code==='42P01'){
+        streetsAvailable=false;
+        return [];
+      }
+      if(result.error)throw result.error;
+      return result.data??[];
+    });
+    return Response.json({accounts,masters,streets,streetsAvailable},{headers:{'Cache-Control':'no-store'}});
   }catch(e){return failure(e)}
 }
 export async function POST(req:Request){
@@ -52,13 +63,43 @@ export async function POST(req:Request){
       return Response.json({message:result.data+' customers added. '+(rows.length-result.data)+' existing or duplicate IDs skipped.'});
     }
     const body=await req.json();
+    if(body.action==='street'){
+      const field=z.string().trim().min(1).max(1000);
+      const street=z.object({name:field,area:field,city:field}).parse(body);
+      const result=await db.from('street_master').insert(street);
+      if(result.error?.code==='23505')throw Error('This street already exists in that area and city.');
+      if(result.error)throw result.error;
+      return Response.json({message:'Street added.'});
+    }
+    if(body.action==='batch-paid'){
+      const {ids, balance}=z.object({
+        ids:z.array(z.string().uuid()).min(1).max(100),
+        balance:z.number().positive().multipleOf(0.01),
+        confirmed:z.literal(true)
+      }).parse(body);
+      const accrued=await db.rpc('accrue_customer_bills');
+      if(accrued.error)throw accrued.error;
+      const paid=await db.from('customers').update({balance:0})
+        .in('id',ids).eq('balance',balance).select('id');
+      if(paid.error)throw paid.error;
+      return Response.json({paid:paid.data.map(row=>row.id)});
+    }
     if(body.action==='master'){
       const item=z.object({kind:z.enum(['plan','channel','agent']),name:z.string().trim().min(1).max(200),amount:z.coerce.number().min(0).max(9999999999).multipleOf(.01)}).parse(body);
       const r=await db.from('customer_master').insert(item);
       if(r.error)throw r.error;
       return Response.json({message:item.name+' added to Masters.'});
     }else if(body.action==='save'){
-      const r=await db.rpc('save_customer_profiles',{entries:[entry(body.form)],editing:body.id?z.string().uuid().parse(body.id):null});
+      const customer=entry(body.form);
+      if(customer.profile.street_id){
+        const street=await db.from('street_master').select('name,area,city')
+          .eq('id',customer.profile.street_id).single();
+        if(street.error || !street.data)throw Error('Unable to load the selected street. Refresh and try again.');
+        customer.profile.street=street.data.name;
+        customer.area=street.data.area;
+        customer.profile.city=street.data.city;
+      }
+      const r=await db.rpc('save_customer_profiles',{entries:[customer],editing:body.id?z.string().uuid().parse(body.id):null});
       if(r.error)throw r.error;
       if(!r.data)throw Error('Customer ID already exists or the profile was removed.');
       return Response.json({message:body.id?'Customer details updated.':'Customer added.'});

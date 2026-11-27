@@ -1,23 +1,116 @@
-'use client';
-import toast from 'react-hot-toast';
-import {useState} from 'react';
-import {useQueryClient} from '@tanstack/react-query';
-import {useRouter} from 'next/navigation';
-import {canStopCampaign} from '@/lib/message-history';
-export default function CampaignActions({id,status,title,detail=false}:{id:string;status:string;title:string;detail?:boolean}){
- const [busy,setBusy]=useState(false);const [error,setError]=useState('');
- const cache=useQueryClient();const router=useRouter();
- async function resume(){
-  setBusy(true);setError('');
-  try{const response=await fetch('/api/queue/process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({campaignId:id})});const data=await response.json();if(!response.ok)throw new Error(data.error);if(data.busy)toast('Queue is already processing.');else toast.success(`${data.processed} message(s) processed. Remaining queued messages continue through the scheduled processor.`);await cache.invalidateQueries();}
-  catch(e){setError(e instanceof Error?e.message:'Unable to resume queue.');}finally{setBusy(false);}
- }
- async function act(remove:boolean){
-  if(busy)return;
-  if(remove&&!window.confirm(`Delete "${title}" from message history and stop its remaining queued messages? Messages already sent cannot be recalled.`))return;
-  setBusy(true);setError('');
-  try{const response=await fetch(`/api/campaigns/${id}/${remove?'delete':'cancel'}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true})});const data=await response.json();if(!response.ok)throw new Error(data.error||'Please try again.');await cache.invalidateQueries();toast.success(remove?'Campaign history deleted.':'Queue stopped. A message already being sent may still arrive.');if(remove&&detail)router.replace('/history');}
-  catch(e){setError(e instanceof Error?e.message:'Please try again.');}finally{setBusy(false);}
- }
- return <div><div className="actions">{['QUEUED','RUNNING'].includes(status)&&<button className="button secondary compact" disabled={busy} onClick={resume}>Resume queue</button>}{canStopCampaign(status)&&<button className="button secondary compact" disabled={busy} onClick={()=>act(false)}>Stop queued messages</button>}<button className="text-button" disabled={busy} onClick={()=>act(true)}>Delete history</button></div>{error&&<p className="feedback error" role="alert">{error}</p>}</div>;
+"use client";
+import toast from "react-hot-toast";
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
+import { canStopCampaign } from "@/lib/message-history";
+export default function CampaignActions({
+  id,
+  status,
+  title,
+  detail = false,
+}: {
+  id: string;
+  status: string;
+  title: string;
+  detail?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const cache = useQueryClient();
+  const router = useRouter();
+  async function resume() {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/queue/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignId: id }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      if (data.busy) toast("Queue is already processing.");
+      else
+        toast.success(
+          `${data.processed} message(s) processed. Remaining queued messages continue through the scheduled processor.`,
+        );
+      await cache.invalidateQueries();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Unable to resume queue.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function act(remove: boolean) {
+    if (busy) return;
+    if (
+      remove &&
+      !window.confirm(
+        `Delete "${title}" from message history and stop its remaining queued messages? Messages already sent cannot be recalled.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/campaigns/${id}/${remove ? "delete" : "cancel"}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirmed: true }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Please try again.");
+      await cache.invalidateQueries();
+      toast.success(
+        remove
+          ? "Campaign history deleted."
+          : "Queue stopped. A message already being sent may still arrive.",
+      );
+      if (remove && detail) router.replace("/history");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2">
+        {["QUEUED", "RUNNING"].includes(status) && (
+          <button
+            className="sv-button border-sv-border bg-white text-sv-text text-xs"
+            disabled={busy}
+            onClick={resume}
+          >
+            Resume queue
+          </button>
+        )}
+        {canStopCampaign(status) && (
+          <button
+            className="sv-button border-sv-border bg-white text-sv-text text-xs"
+            disabled={busy}
+            onClick={() => act(false)}
+          >
+            Stop queued messages
+          </button>
+        )}
+        <button
+          className="cursor-pointer text-sv-primary underline underline-offset-2"
+          disabled={busy}
+          onClick={() => act(true)}
+        >
+          Delete history
+        </button>
+      </div>
+      {error && (
+        <p className="border-l-4 border-sv-red bg-red-50 px-3 py-2 text-red-900" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
